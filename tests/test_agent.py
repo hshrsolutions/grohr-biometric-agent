@@ -179,6 +179,67 @@ def test_reader():
 	check("the server's cursor filters what is read", len(later) == 1, later)
 
 
+class _Cursor:
+	def __init__(self, rows):
+		self.rows, self.sql, self.params = rows, None, None
+
+	def execute(self, sql, params):
+		self.sql, self.params = sql, params
+
+	def fetchall(self):
+		return self.rows
+
+
+class _DB:
+	def __init__(self, rows):
+		self.cur = _Cursor(rows)
+		self.closed = False
+
+	def cursor(self):
+		return self.cur
+
+	def close(self):
+		self.closed = True
+
+
+def test_wdms():
+	print("WDMS / Time Pro:")
+	from grohr_agent.devices.wdms import WDMSReader
+
+	rows = [
+		("1434", datetime(2026, 8, 31, 9, 0), "SN-1", 0),
+		("1530", datetime(2026, 8, 31, 17, 30), "SN-1", 1),
+		(None, datetime(2026, 8, 31, 18, 0), "SN-1", 0),
+	]
+	db = _DB(rows)
+
+	class _R(WDMSReader):
+		def connect(self):
+			return db
+
+	reader = _R({"serial_no": "SN-1"}, _Log())
+	punches = reader.read(since=datetime(2026, 8, 31, 0, 0))
+
+	check("rows become punches", len(punches) == 2, len(punches))
+	check("a row with no employee id is skipped", all(p["device_user_id"] for p in punches))
+	check("timestamps are formatted for the wire", punches[0]["punch_time"] == "2026-08-31 09:00:00")
+	check("the punch state is passed through", punches[1]["raw_log_type"] == "1")
+	check("the connection is closed", db.closed)
+
+	# The point of this reader: it must never write to the vendor's database.
+	sql = db.cur.sql.upper()
+	check("the query is a plain SELECT", sql.strip().startswith("SELECT"), sql[:60])
+	for forbidden in ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP"):
+		check(f"the query contains no {forbidden}", forbidden not in sql, sql[:120])
+	check("the cursor is applied in SQL, not in Python", "?" in db.cur.sql and db.cur.params)
+	check("parameters are bound, not interpolated", db.cur.params[0] == datetime(2026, 8, 31, 0, 0))
+
+	# Column names differ between Time Pro installs, so they must be overridable.
+	custom = _R({"serial_no": "SN-1", "wdms": {"table": "att_log", "user_column": "badgenumber"}}, _Log())
+	sql, _ = custom.query(None)
+	check("table and column names are configurable", "[att_log]" in sql and "[badgenumber]" in sql, sql)
+
+
 def run():
 	print("GroHR biometric agent — offline tests\n")
 	test_config()
@@ -186,6 +247,7 @@ def run():
 	test_spool_survives_restart()
 	test_backoff()
 	test_reader()
+	test_wdms()
 
 	failed = [r for r in _results if not r[1]]
 	print(f"\n{len(_results) - len(failed)}/{len(_results)} passed")
