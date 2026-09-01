@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+config.json
+spool.sqlite3
+logs/
+dist/
+build/
+*.spec
+venv/

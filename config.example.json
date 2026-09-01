@@ -1,0 +1,16 @@
+{
+  "site_url": "https://yourcompany.grohrms.cloud",
+  "api_key": "",
+  "api_secret": "",
+  "connector": "Head Office Agent",
+
+  "poll_interval_seconds": 300,
+  "batch_size": 200,
+  "max_attempts": 10,
+  "request_timeout_seconds": 60,
+  "verify_tls": true,
+  "proxy": null,
+
+  "log_dir": "logs",
+  "spool_path": "spool.sqlite3"
+}
