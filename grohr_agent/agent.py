@@ -11,7 +11,8 @@ import time
 from datetime import datetime
 
 from grohr_agent import __version__
-from grohr_agent.devices import reader_for
+from grohr_agent.config import source_for
+from grohr_agent.devices import SQL_DRIVERS, reader_for
 from grohr_agent.server import AuthError, Server, ServerError, backoff
 from grohr_agent.spool import Spool
 
@@ -35,6 +36,7 @@ class Agent:
 			read = self.read_devices()
 			sent = self.drain()
 			self.heartbeat()
+			self.spool.prune_sent(self.config.sent_retention_days)
 			self.failures = 0
 			counts = self.spool.counts()
 			self.log.info(
@@ -74,6 +76,15 @@ class Agent:
 					f"No reader for driver {device.get('driver')!r} on device {device.get('name')}; skipping."
 				)
 				continue
+			if device.get("driver") in SQL_DRIVERS:
+				source = source_for(self.config, device)
+				if not source:
+					self.log.error(
+						f"{device.get('name')}: driver {device.get('driver')} reads a database, but config.json "
+						f"has no `sources` entry for {device.get('name')!r}, serial {device.get('serial_no')!r} or \"*\"."
+					)
+					continue
+				device = {**device, "source": source}
 			try:
 				# The cursor is the server's, not ours. A stale one is harmless.
 				since = _parse(device.get("last_punch_time"))

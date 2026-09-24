@@ -14,7 +14,7 @@ import hashlib
 import json
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS punch (
@@ -23,6 +23,12 @@ CREATE TABLE IF NOT EXISTS punch (
 	attempts    INTEGER NOT NULL DEFAULT 0,
 	first_seen  TEXT NOT NULL,
 	last_error  TEXT
+);
+-- Punches the server has accepted. Lets a reader re-read a look-back window
+-- every cycle without re-sending what was already delivered. Pruned by age.
+CREATE TABLE IF NOT EXISTS sent (
+	key         TEXT PRIMARY KEY,
+	sent_at     TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS dead (
 	key         TEXT PRIMARY KEY,
@@ -59,6 +65,8 @@ class Spool:
 		now = datetime.now().isoformat(timespec="seconds")
 		for punch in punches:
 			key = punch_key(punch["device_serial"], punch["device_user_id"], punch["punch_time"])
+			if self.db.execute("SELECT 1 FROM sent WHERE key = ?", (key,)).fetchone():
+				continue
 			cursor = self.db.execute(
 				"INSERT OR IGNORE INTO punch (key, payload, first_seen) VALUES (?, ?, ?)",
 				(key, json.dumps(punch), now),
@@ -77,8 +85,18 @@ class Spool:
 		"""The server has it. Ours to forget."""
 		if not keys:
 			return
+		now = datetime.now().isoformat(timespec="seconds")
 		self.db.executemany("DELETE FROM punch WHERE key = ?", [(k,) for k in keys])
+		self.db.executemany("INSERT OR REPLACE INTO sent (key, sent_at) VALUES (?, ?)", [(k, now) for k in keys])
 		self.db.commit()
+
+	def prune_sent(self, days):
+		"""Forget deliveries older than the retention window. Safe: the server's
+		idempotency key would absorb a re-send anyway; this only keeps it rare."""
+		cutoff = (datetime.now() - timedelta(days=int(days))).isoformat(timespec="seconds")
+		removed = self.db.execute("DELETE FROM sent WHERE sent_at < ?", (cutoff,)).rowcount
+		self.db.commit()
+		return removed
 
 	def defer(self, keys, error, max_attempts):
 		"""A transient failure. Count the attempt; dead-letter anything that has
@@ -108,4 +126,5 @@ class Spool:
 	def counts(self):
 		pending = self.db.execute("SELECT COUNT(*) AS n FROM punch").fetchone()["n"]
 		dead = self.db.execute("SELECT COUNT(*) AS n FROM dead").fetchone()["n"]
-		return {"pending": pending, "dead": dead}
+		sent = self.db.execute("SELECT COUNT(*) AS n FROM sent").fetchone()["n"]
+		return {"pending": pending, "dead": dead, "sent": sent}

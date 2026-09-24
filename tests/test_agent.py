@@ -232,12 +232,144 @@ def test_wdms():
 	for forbidden in ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP"):
 		check(f"the query contains no {forbidden}", forbidden not in sql, sql[:120])
 	check("the cursor is applied in SQL, not in Python", "?" in db.cur.sql and db.cur.params)
-	check("parameters are bound, not interpolated", db.cur.params[0] == datetime(2026, 8, 31, 0, 0))
+	check("parameters are bound, not interpolated, and start one look-back before the cursor",
+	      db.cur.params[0] == datetime(2026, 8, 30, 0, 0), db.cur.params)
+	check("SQL Server is the WDMS default and uses TOP", "TOP 5000" in db.cur.sql, db.cur.sql)
 
 	# Column names differ between Time Pro installs, so they must be overridable.
 	custom = _R({"serial_no": "SN-1", "wdms": {"table": "att_log", "user_column": "badgenumber"}}, _Log())
 	sql, _ = custom.query(None)
 	check("table and column names are configurable", "[att_log]" in sql and "[badgenumber]" in sql, sql)
+
+
+class _PagedCursor:
+	"""Serves rows from a list, honouring the `>= since` bound and the limit, so
+	paging is exercised for real."""
+
+	def __init__(self, rows):
+		self.rows = rows
+		self.statements = []
+		self.description = None
+
+	def execute(self, sql, params=()):
+		self.statements.append((sql, list(params)))
+		self.sql, self.params = sql, list(params)
+
+	def fetchall(self):
+		if not self.sql.upper().startswith("SELECT"):
+			return []
+		since = self.params[0] if self.params else None
+		rows = [r for r in self.rows if since is None or r[1] >= since]
+		limit = int(self.sql.rsplit("LIMIT", 1)[1]) if "LIMIT" in self.sql else len(rows)
+		return rows[:limit]
+
+
+class _PagedDB:
+	def __init__(self, rows):
+		self.cur = _PagedCursor(rows)
+
+	def cursor(self):
+		return self.cur
+
+	def close(self):
+		pass
+
+
+def test_sql_mysql():
+	print("SQL Database / MySQL:")
+	from grohr_agent.config import source_for
+	from grohr_agent.devices import reader_for
+	from grohr_agent.devices.sqldb import SQLReader
+
+	check("the SQL Database driver is registered", reader_for("SQL Database") is SQLReader)
+
+	base = datetime(2026, 9, 1, 8, 0)
+	rows = [(str(100 + i % 7), base + timedelta(minutes=i), "SN-9", i % 2) for i in range(23)]
+	db = _PagedDB(rows)
+
+	class _R(SQLReader):
+		def connect(self):
+			return db
+
+	device = {"name": "Gate", "serial_no": "SN-9",
+	          "source": {"engine": "mariadb", "host": "x", "max_rows": 10, "lookback_minutes": 0}}
+	reader = _R(device, _Log())
+	punches = reader.read(since=base)
+	check("mariadb is treated as mysql", reader.engine == "mysql")
+	check("paging reads the whole backlog in one cycle", len(punches) == 23, len(punches))
+	check("page overlaps are not duplicated", len({(p["device_user_id"], p["punch_time"]) for p in punches}) == 23)
+	selects = [st for st in db.cur.statements if st[0].startswith("SELECT")]
+	check("it read in pages", len(selects) == 3, len(selects))
+	check("the session is put into READ ONLY first",
+	      db.cur.statements[0][0] == "SET SESSION TRANSACTION READ ONLY", db.cur.statements[0][0])
+	sql = selects[0][0]
+	check("MySQL identifiers are backquoted", "`emp_code`" in sql and "`iclock_transaction`" in sql, sql)
+	check("MySQL placeholders are %s", "%s" in sql and "?" not in sql, sql)
+	check("MySQL uses LIMIT", sql.endswith("LIMIT 10"), sql)
+	check("the serial filter is bound", "SN-9" in selects[0][1], selects[0][1])
+	for forbidden in ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP", "CREATE"):
+		check(f"no statement contains {forbidden}",
+		      not any(forbidden in st[0].upper() for st in db.cur.statements))
+
+	no_serial = SQLReader({"name": "All", "serial_no": "ALL-1",
+	                       "source": {"host": "x", "serial_column": None, "state_column": None}}, _Log())
+	sql, params = no_serial.query(None, 5)
+	check("a table without a serial column still works", "NULL, NULL" in sql and params == [], sql)
+	check("its punches carry the device's own serial",
+	      no_serial.to_punches([("7", base, None, None)])[0]["device_serial"] == "ALL-1")
+
+	fresh = SQLReader({"name": "G", "source": {"host": "x"}, "ignore_punches_before": "2026-09-10 00:00:00"}, _Log())
+	check("a first read starts at ignore_punches_before", fresh.window_start(None) == datetime(2026, 9, 10))
+	fresh = SQLReader({"name": "G", "source": {"host": "x", "initial_days": 3}}, _Log())
+	check("or initial_days ago, never at the beginning of time",
+	      (datetime.now() - fresh.window_start(None)).days in (2, 3))
+
+	for bad in ("emp`code", "x; DROP TABLE y", "a]b"):
+		try:
+			SQLReader({"source": {"host": "x", "user_column": bad}}, _Log()).query(None)
+			check(f"identifier {bad!r} is refused", False)
+		except ValueError:
+			check(f"identifier {bad!r} is refused", True)
+	try:
+		SQLReader({"source": {"engine": "oracle"}}, _Log())
+		check("an unknown engine is refused", False)
+	except ValueError:
+		check("an unknown engine is refused", True)
+
+	config = {"sources": {"*": {"host": "any"}, "SN-9": {"host": "nine"}, "Front": {"host": "front"}}}
+	check("sources match by device name first",
+	      source_for(config, {"name": "Front", "serial_no": "SN-9"})["host"] == "front")
+	check("then by serial", source_for(config, {"name": "X", "serial_no": "SN-9"})["host"] == "nine")
+	check("then the * catch-all", source_for(config, {"name": "X", "serial_no": "Q"})["host"] == "any")
+	check("and nothing if there is no match", source_for({"sources": {}}, {"name": "X"}) is None)
+
+
+def test_sent_ledger():
+	print("Sent ledger:")
+	spool = Spool(_tmp("spool.sqlite3"))
+	spool.add([_punch("1", 1), _punch("2", 2)])
+	spool.accept([i["key"] for i in spool.take(10)])
+	check("a delivered punch is not re-spooled on a re-read", spool.add([_punch("1", 1), _punch("3", 3)]) == 1)
+	check("the ledger is counted", spool.counts()["sent"] == 2, spool.counts())
+	spool.db.execute("UPDATE sent SET sent_at = '2000-01-01T00:00:00'")
+	check("old entries are pruned", spool.prune_sent(45) == 2)
+
+
+def test_config_sources():
+	print("Config sources:")
+	path = _tmp("config.json")
+	base = {"site_url": "https://x.example", "api_key": "k", "api_secret": "s", "connector": "C"}
+	with open(path, "w") as f:
+		json.dump({**base, "sources": {"*": {"engine": "mysql", "host": "127.0.0.1"}, "_comment": "x"}}, f)
+	check("a valid source loads", load(path).sources["*"]["host"] == "127.0.0.1")
+	for bad in ({"*": {"engine": "oracle", "host": "h"}}, {"*": {"engine": "mysql"}}, ["x"]):
+		with open(path, "w") as f:
+			json.dump({**base, "sources": bad}, f)
+		try:
+			load(path)
+			check(f"a bad source is refused: {bad}", False)
+		except ConfigError:
+			check(f"a bad source is refused: {bad}", True)
 
 
 def run():
@@ -248,6 +380,9 @@ def run():
 	test_backoff()
 	test_reader()
 	test_wdms()
+	test_sql_mysql()
+	test_sent_ledger()
+	test_config_sources()
 
 	failed = [r for r in _results if not r[1]]
 	print(f"\n{len(_results) - len(failed)}/{len(_results)} passed")

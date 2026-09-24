@@ -23,7 +23,15 @@ DEFAULTS = {
 	"spool_path": "spool.sqlite3",
 	# For sites reached by IP or through a load balancer that does not rewrite it.
 	"host_header": None,
+	# How long a delivered punch is remembered locally, so a re-read of the
+	# look-back window does not send it again.
+	"sent_retention_days": 45,
+	# Database sources, keyed by Biometric Device name or serial, or "*" for
+	# every database-backed device. Credentials live here and nowhere else.
+	"sources": {},
 }
+
+SOURCE_ENGINES = ("mysql", "mariadb", "mssql", "sqlserver")
 
 
 class ConfigError(Exception):
@@ -69,6 +77,19 @@ def load(path="config.json"):
 		# said out loud, because an API secret is going over this wire.
 		config["_insecure"] = True
 
+	if not isinstance(config["sources"], dict):
+		raise ConfigError("sources must be an object keyed by device name, serial or \"*\".")
+	for key, source in config["sources"].items():
+		if key.startswith("_"):
+			continue
+		if not isinstance(source, dict):
+			raise ConfigError(f"sources.{key} must be an object.")
+		engine = str(source.get("engine") or "mysql").lower()
+		if engine not in SOURCE_ENGINES:
+			raise ConfigError(f"sources.{key}.engine must be 'mysql' or 'mssql', not {engine!r}.")
+		if not source.get("connection_string") and not source.get("host"):
+			raise ConfigError(f"sources.{key} needs a host (or, for SQL Server, a connection_string).")
+
 	# Relative paths are relative to the config file, not to wherever the service
 	# happened to be started from.
 	base = os.path.dirname(os.path.abspath(path))
@@ -77,3 +98,13 @@ def load(path="config.json"):
 			config[key] = os.path.join(base, config[key])
 
 	return config
+
+
+def source_for(config, device):
+	"""The local database settings for a server-listed device: by device name,
+	then serial, then the "*" catch-all. None if nothing matches."""
+	sources = config.get("sources") or {}
+	for key in (device.get("name"), device.get("serial_no"), "*"):
+		if key and isinstance(sources.get(key), dict):
+			return sources[key]
+	return None

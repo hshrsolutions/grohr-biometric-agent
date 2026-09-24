@@ -37,9 +37,20 @@ That is the one thing this fork changes, and everything else follows from it.
 
 ## Install
 
-Windows is the reference platform — see **[INSTALL-WINDOWS.md](INSTALL-WINDOWS.md)**.
+One command per platform, from the unzipped release
+(`./pack.sh` builds `dist/grohr-biometric-agent-<version>.zip`):
 
-Anywhere else:
+| Platform | Command | Guide |
+|---|---|---|
+| Windows (reference) | `powershell -ExecutionPolicy Bypass -File .\install\windows\install.ps1 -Customer <profile>` | [INSTALL-WINDOWS.md](INSTALL-WINDOWS.md) |
+| Linux (systemd) | `sudo bash install/linux/install.sh --customer <profile>` | [INSTALL-LINUX.md](INSTALL-LINUX.md) |
+
+Both installers ask for the secrets, lock `config.json`, **prove the setup with
+`--probe` and `--once` before installing the service**, and are safe to re-run
+as an update. Customer profiles (site, connector, source defaults — never
+secrets) live in `profiles/<customer>/config.json`.
+
+By hand, anywhere:
 
 ```bash
 python3 -m venv venv && . venv/bin/activate
@@ -63,12 +74,55 @@ python -m grohr_agent                  # run
 | `proxy`, `host_header` | For networks that need them |
 | `log_dir`, `spool_path` | Relative paths resolve beside `config.json` |
 
+| `sent_retention_days` | How long delivered punches are remembered locally. Default 45 |
+| `sources` | Attendance-software databases — see below |
+
 Lock down `config.json` — it holds a live credential.
+
+## Attendance-software databases (MySQL / MariaDB / SQL Server)
+
+When the readers talk only to the vendor's software and the punches live in its
+database, register each reader in GroHR with driver **`SQL Database`** (or
+`WDMS` for eSSL Time Pro, which defaults to SQL Server) and tell the agent how to
+reach that database under `sources`:
+
+```json
+"sources": {
+  "*": {
+    "engine": "mysql",               // or "mssql" (SQL Server)
+    "host": "127.0.0.1", "port": 3306,
+    "database": "etimetrack", "user": "grohr_ro", "password": "…",
+    "table": "iclock_transaction",
+    "user_column": "emp_code", "time_column": "punch_time",
+    "serial_column": "terminal_sn",  // null if the table has none
+    "state_column": "punch_state",   // null if the table has none
+    "lookback_minutes": 1440, "initial_days": 7, "max_rows": 5000
+  }
+}
+```
+
+Keys are matched in order: device **name**, device **serial**, then `"*"`.
+SQL Server also accepts `connection_string`, or `trusted_connection: true`
+instead of `user`/`password`, and `odbc_driver`.
+
+- **Read-only.** SELECT only; on MySQL the session is put in READ ONLY mode too.
+  Give it a login with SELECT on the one table — nothing else.
+- **Credentials stay on the premises.** The server's device list never carries
+  them.
+- **Late uploads are caught.** Each read starts `lookback_minutes` before the
+  server's cursor; the local sent-ledger means that overlap is not re-sent.
+- **No history flood.** A first read starts at the device's *Ignore Punches
+  Before*, or `initial_days` ago.
+- **Commission it first:** `python -m grohr_agent --probe` connects to every
+  source, lists the tables if the configured one is missing, checks the columns,
+  prints the row count and date range, **every reader serial in the table** (register
+  each as a Biometric Device) and the latest punches. It needs no server.
 
 ## Operating it
 
 ```bash
 python -m grohr_agent --status    # what is waiting locally
+python -m grohr_agent --probe     # test the database sources (read-only, no server needed)
 python -m grohr_agent --once      # a single cycle, verbose, for diagnosis
 ```
 
