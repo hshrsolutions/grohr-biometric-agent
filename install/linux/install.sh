@@ -52,7 +52,7 @@ fi
 say "Copying the agent to $DIR"
 mkdir -p "$DIR"
 if [[ "$SRC" != "$(cd "$DIR" && pwd)" ]]; then
-	tar -C "$SRC" --exclude=config.json --exclude=spool.sqlite3 --exclude=logs --exclude=__pycache__ \
+	tar -C "$SRC" --anchored --exclude=./config.json --exclude=./spool.sqlite3 --exclude=./logs --exclude=__pycache__ \
 		--exclude=.git --exclude=venv --exclude=dist --exclude=tests -cf - . | tar -C "$DIR" -xf -
 fi
 good "files in place (config.json, spool and logs untouched)"
