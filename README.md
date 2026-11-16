@@ -118,6 +118,49 @@ instead of `user`/`password`, and `odbc_driver`.
   prints the row count and date range, **every reader serial in the table** (register
   each as a Biometric Device) and the latest punches. It needs no server.
 
+### Finding out which eSSL database this is (0.5.0+)
+
+```bash
+ESSL_DB_PASSWORD=... python tools/essl_discover.py --engine mssql --host 192.168.20.5 --user grohr_ro
+```
+
+Read-only. Recognises `iclock_transaction` (Time Pro / WDMS / Easy Time Pro / BioTime) and eTimeTrackLite's
+monthly `DeviceLogs_<m>_<yyyy>` tables, lists each reader with its punch count (and flags stale ones), compares
+the database server's clock, and prints the `sources` block. `--json` is what the Thenianantham installer uses.
+
+For monthly tables use `table_pattern` instead of `table`:
+`"table_pattern": "DeviceLogs_{m}_{Y}", "user_column": "UserId", "time_column": "LogDate", "serial_column": "DeviceId", "state_column": "Direction"`
+(`{m}` month 1-12, `{mm}` 01-12, `{Y}` year; every month from the read window to now is read, missing months skipped).
+
+## Pushing employees into eSSL Easy Time Pro (0.4.0+)
+
+GroHR can create, update and remove employees in Easy Time Pro (eSSL's build of
+ZKTeco BioTime), so a new joiner reaches the machines without being typed in
+twice. The server decides who and where; this agent only calls Easy Time Pro's
+REST API on the office PC, and Easy Time Pro sends the user to the machines in
+their area. The Easy Time Pro database is never written.
+
+1. In Easy Time Pro, make a user for the agent (System → User) with rights to
+   Personnel → Employee and Resignation. Not the admin login.
+2. Add to `config.json`:
+
+       "easytime": {"url": "http://127.0.0.1:8081", "username": "grohr_sync",
+                    "password": "…", "auth": "jwt", "dry_run": true}
+
+   `auth` is `"token"` on older BioTime builds that have no JWT login. If this
+   build's URLs differ, override them under `"paths"` (see `grohr_agent/easytime.py`).
+3. `python -m grohr_agent --probe-easytime` — logs in and lists departments and
+   areas. Changes nothing. The area codes go into GroHR's Biometric Settings.
+4. In GroHR switch on Biometric Settings → Push Employees to Easy Time Pro, with
+   this agent's connector. With `dry_run` on, every request comes back as
+   *Dry Run* in GroHR's **Easy Time Pro Sync** list, showing what would happen.
+5. When the dry run looks right: set `"dry_run": false`, restart the service, and
+   press **Resend all Dry Run** in GroHR.
+
+A user Easy Time Pro already has under the same ID is only updated if the names
+match; anyone else comes back to HR as a **Conflict**, untouched. Fingerprints and
+faces are still enrolled at a machine — no software can create them remotely.
+
 ## Operating it
 
 ```bash

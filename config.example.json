@@ -29,5 +29,23 @@
       "initial_days": 7,
       "max_rows": 5000
     }
+  },
+  "profile": {
+    "_note": "Optional. Answers GroHR profile requests (name + photo). Defaults are eSSL Easy Time Pro / BioTime.",
+    "source": "*",
+    "table": "personnel_employee",
+    "id_column": "emp_code",
+    "name_column": "first_name",
+    "photo_column": "photo",
+    "photo_roots": []
+  },
+  "easytime": {
+    "_note": "Optional. Lets GroHR create/update/remove employees in eSSL Easy Time Pro (BioTime) through its REST API; it then sends them to the machines. Run --probe-easytime first. Keep dry_run true until the Dry Run results in GroHR look right.",
+    "url": "http://127.0.0.1:8081",
+    "username": "",
+    "password": "",
+    "auth": "jwt",
+    "verify_tls": false,
+    "dry_run": true
   }
 }

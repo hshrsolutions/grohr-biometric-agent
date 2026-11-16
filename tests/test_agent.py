@@ -372,6 +372,240 @@ def test_config_sources():
 			check(f"a bad source is refused: {bad}", True)
 
 
+def test_easytime():
+	"""Against an in-memory Easy Time Pro API (tests/fake_easytime.py)."""
+	print("Easy Time Pro user push:")
+	from grohr_agent import easytime
+	from tests.fake_easytime import FakeEasyTime
+
+	class Log:
+		def info(self, *a): pass
+		warning = error = debug = info
+
+	srv = FakeEasyTime().start()
+	try:
+		cfg = {"url": srv.url, "username": "api", "password": "secret"}
+		up = lambda code, name, **kw: {"sync_id": f"S-{code}", "action": "upsert", "emp_code": code,
+		                               "first_name": name, "department_code": "1", "area_codes": ["MDU"], **kw}
+
+		r = easytime.run({**cfg, "password": "wrong"}, [up("501", "ARUN")], Log())
+		check("a wrong password is an Error, nothing written", r[0]["outcome"] == "Error" and not srv.employees, r)
+
+		r = easytime.run({**cfg, "dry_run": True}, [up("501", "ARUN")], Log())
+		check("dry run looks up and writes nothing", r[0]["outcome"] == "Dry Run" and not srv.calls, r)
+
+		r = easytime.run(cfg, [up("501", "ARUN", area_codes=["MDU", "VNR"], card_no="99")], Log())
+		row = srv.employees[-1] if srv.employees else {}
+		check("a new ID is Created", r[0]["outcome"] == "Created" and r[0]["remote_id"] == row.get("id"), r)
+		check("with area and department as ids, not codes", row.get("area") == [2, 3] and row.get("department") == 1, row)
+		check("and the optional card number", row.get("card_no") == "99", row)
+
+		srv.add("5010", "SOMEONE ELSE")  # 'contains' filter would also match 501
+		r = easytime.run(cfg, [up("501", "ARUN K")], Log())
+		check("an existing ID is reported Exists, not overwritten",
+		      r[0]["outcome"] == "Exists" and r[0]["existing_name"] == "ARUN" and row["first_name"] == "ARUN", r)
+
+		r = easytime.run(cfg, [up("501", "ARUN K", overwrite=True)], Log())
+		check("with overwrite it is Updated in place", r[0]["outcome"] == "Updated" and row["first_name"] == "ARUN K", r)
+		check("the look-alike 5010 is untouched", srv.employees[-1]["first_name"] == "SOMEONE ELSE")
+
+		r = easytime.run(cfg, [up("502", "BALA", area_codes=["NOPE"])], Log())
+		check("an unknown area code is an Error naming it", r[0]["outcome"] == "Error" and "NOPE" in r[0]["message"], r)
+
+		r = easytime.run(cfg, [up("503", "CHITRA", area_codes=[])], Log())
+		check("no area at all is refused", r[0]["outcome"] == "Error", r)
+
+		r = easytime.run(cfg, [{"sync_id": "D1", "action": "disable", "emp_code": "501", "resign_date": "2026-10-03"}], Log())
+		check("disable resigns the user", r[0]["outcome"] == "Resigned" and srv.resigns[-1]["employee"] == row["id"], r)
+		check("with attendance disabled", srv.resigns[-1]["disableatt"] is True)
+
+		r = easytime.run(cfg, [{"sync_id": "D2", "action": "disable", "emp_code": "777"}], Log())
+		check("disabling an unknown ID is Not Found, not an error", r[0]["outcome"] == "Not Found", r)
+
+		r = easytime.run({"url": ""}, [up("504", "D")], Log())
+		check("no url configured is an Error per request", r[0]["outcome"] == "Error", r)
+
+		r = easytime.run({**cfg, "url": "http://127.0.0.1:9"}, [up("505", "E")], Log())
+		check("an unreachable server is an Error, not a crash", r[0]["outcome"] == "Error" and "reach" in r[0]["message"], r)
+	finally:
+		srv.stop()
+
+
+class _MonthlyCursor:
+	"""Knows which monthly tables exist; serves each its own rows."""
+
+	def __init__(self, tables):
+		self.tables, self.statements, self.sql, self.params = tables, [], "", []
+		self.description = [("UserId",), ("LogDate",), ("DeviceId",), ("Direction",)]
+
+	def execute(self, sql, params=()):
+		self.sql, self.params = sql, list(params)
+		self.statements.append(sql)
+
+	def fetchall(self):
+		if "INFORMATION_SCHEMA" in self.sql:
+			return [("dbo." + t,) for t in self.tables]
+		for name, rows in self.tables.items():
+			if f"[{name}]" in self.sql:
+				since = self.params[0] if self.params and isinstance(self.params[0], datetime) else None
+				rows = [r for r in rows if since is None or r[1] >= since]
+				if "COUNT(*), MIN" in self.sql:
+					return [(len(rows), min(r[1] for r in rows), max(r[1] for r in rows))]
+				if "GROUP BY" in self.sql:
+					return [(r[2], 1, r[1]) for r in rows[:1]]
+				return rows
+		raise RuntimeError("query against a table that does not exist: " + self.sql)
+
+
+class _MonthlyDB:
+	def __init__(self, tables):
+		self.cur = _MonthlyCursor(tables)
+
+	def cursor(self):
+		return self.cur
+
+	def close(self):
+		pass
+
+
+def test_monthly_tables():
+	print("Monthly tables (eTimeTrackLite DeviceLogs_<m>_<yyyy>):")
+	from grohr_agent.devices.sqldb import SQLReader
+
+	source = {"engine": "mssql", "host": "x", "table_pattern": "DeviceLogs_{m}_{Y}", "user_column": "UserId",
+	          "time_column": "LogDate", "serial_column": "DeviceId", "state_column": "Direction",
+	          "lookback_minutes": 0}
+	reader = SQLReader({"name": "E", "serial_no": "1", "source": source}, _Log())
+	check("a window across a year end lists each month once, oldest first",
+	      reader.tables_for(datetime(2025, 11, 20), now=datetime(2026, 2, 3))
+	      == ["DeviceLogs_11_2025", "DeviceLogs_12_2025", "DeviceLogs_1_2026", "DeviceLogs_2_2026"])
+	check("{mm} is zero padded",
+	      SQLReader({"source": {"host": "x", "table_pattern": "L_{mm}{Y}"}}, _Log())
+	      .tables_for(datetime(2026, 3, 1), now=datetime(2026, 3, 9)) == ["L_032026"])
+	check("without a pattern it is the one table",
+	      SQLReader({"source": {"host": "x", "table": "t"}}, _Log()).tables_for(datetime(2026, 3, 1)) == ["t"])
+
+	now = datetime.now().replace(microsecond=0, second=0)
+	this_month = f"DeviceLogs_{now.month}_{now.year}"
+	last = (now.replace(day=1) - timedelta(days=1))
+	last_month = f"DeviceLogs_{last.month}_{last.year}"
+	older = (last.replace(day=1) - timedelta(days=1))
+	missing_month = f"DeviceLogs_{older.month}_{older.year}"
+	a, b = now - timedelta(minutes=5), last.replace(hour=9, minute=0, second=0, microsecond=0)
+	db = _MonthlyDB({last_month: [("7", b, "1", "in")], this_month: [("7", a, "1", "out")]})
+
+	class _R(SQLReader):
+		def connect(self):
+			return db
+
+	reader = _R({"name": "E", "serial_no": "1", "source": {**source, "initial_days": 70}}, _Log())
+	punches = reader.read(since=None)
+	check("both months are read", len(punches) == 2, len(punches))
+	check("oldest month first", [p["raw_log_type"] for p in punches] == ["in", "out"], punches)
+	check("a month with no table is skipped, not an error", missing_month not in " ".join(db.cur.statements))
+	selects = [x for x in db.cur.statements if x.startswith("SELECT TOP")]
+	check("only SELECTs are issued", all(x.startswith("SELECT") for x in db.cur.statements))
+	check("each query names its own month", f"[{last_month}]" in selects[0] and f"[{this_month}]" in selects[1], selects)
+
+	lines = []
+	ok = reader.probe(out=lines.append)
+	check("probe succeeds against the newest monthly table", ok is True, lines)
+	check("probe says which monthly table it checked", any(f"checking {this_month}" in x for x in lines), lines[:3])
+	empty = _R({"name": "E", "source": source}, _Log())
+	db.cur.tables = {"Other": []}
+	lines = []
+	check("probe fails clearly when no monthly table exists", empty.probe(out=lines.append) is False
+	      and any("NO TABLE MATCHING" in x for x in lines), lines)
+
+
+from grohr_agent.devices.sqldb import SQLReader as _SQLReader  # noqa: E402
+
+SQLReader_connect_original = _SQLReader.connect
+
+
+class _DiscoverCursor:
+	def __init__(self, schema):
+		self.schema, self.sql, self.description = schema, "", None
+
+	def execute(self, sql, params=()):
+		self.sql = sql
+
+	def _table(self):
+		for name in self.schema:
+			if f"[{name}]" in self.sql:
+				return name
+		raise RuntimeError("no such table: " + self.sql)
+
+	def fetchall(self):
+		if "INFORMATION_SCHEMA" in self.sql:
+			return [("dbo." + t,) for t in self.schema]
+		t = self._table()
+		cols, rows = self.schema[t]
+		if "TOP 1 *" in self.sql:
+			self.description = [(c,) for c in cols]
+			return []
+		if "COUNT(*), MIN" in self.sql:
+			times = [r[1] for r in rows]
+			return [(len(rows), min(times), max(times))]
+		if "GROUP BY" in self.sql:
+			by = {}
+			for r in rows:
+				n, last = by.get(r[2], (0, None))
+				by[r[2]] = (n + 1, max(last, r[1]) if last else r[1])
+			return [(k, n, last) for k, (n, last) in by.items()]
+		raise RuntimeError("unexpected: " + self.sql)
+
+
+class _DiscoverDB:
+	def __init__(self, schema):
+		self.cur = _DiscoverCursor(schema)
+
+	def cursor(self):
+		return self.cur
+
+	def close(self):
+		pass
+
+
+def test_discover():
+	print("eSSL discovery:")
+	sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+	import essl_discover
+	from argparse import Namespace
+
+	d = datetime(2026, 9, 1, 9, 0)
+	iclock = {"iclock_transaction": (["emp_code", "punch_time", "terminal_sn", "punch_state"],
+	          [("101", d, "CJ1", "0"), ("102", d + timedelta(hours=1), "CJ2", "1"), ("101", d, "CJ1", "1")]),
+	          "personnel_employee": (["emp_code"], [])}
+	monthly = {"DeviceLogs_8_2026": (["UserId", "LogDate", "DeviceId", "Direction"], [("7", d, "1", "in")]),
+	           "DeviceLogs_9_2026": (["UserId", "LogDate", "DeviceId", "Direction"],
+	                                 [("7", d, "1", "in"), ("8", d, "2", "out")]),
+	           "Employees": (["EmployeeId"], [])}
+	zk = {"CHECKINOUT": (["USERID", "CHECKTIME"], [])}
+	args = Namespace(engine="mssql", host="h", port=None, user="u", password="p", odbc_driver=None, trusted=False)
+
+	def run_for(schema):
+		essl_discover.SQLReader.connect = lambda self: _DiscoverDB(schema)
+		return essl_discover.discover_database(args, "db")
+
+	r = run_for(iclock)
+	check("iclock_transaction is recognised", r["variant"] == "iclock_transaction", r)
+	check("its readers and counts are listed",
+	      sorted((s, n) for s, n, _ in r["readers"]) == [("CJ1", 2), ("CJ2", 1)], r["readers"])
+	check("it suggests the iclock column names", r["source"]["user_column"] == "emp_code")
+
+	r = run_for(monthly)
+	check("monthly DeviceLogs tables are recognised", r["variant"].startswith("DeviceLogs"), r)
+	check("the suggested source uses a table_pattern", r["source"]["table_pattern"] == "DeviceLogs_{m}_{Y}", r["source"])
+	check("readers are summed across months", sorted((s, n) for s, n, _ in r["readers"]) == [("1", 2), ("2", 1)],
+	      r["readers"])
+	check("row count covers the scanned months", r["rows"] == 3, r["rows"])
+
+	r = run_for(zk)
+	check("an unsupported variant is reported, not guessed", r["variant"] is None and r["unsupported"], r)
+	essl_discover.SQLReader.connect = SQLReader_connect_original
+
+
 def run():
 	print("GroHR biometric agent — offline tests\n")
 	test_config()
@@ -381,8 +615,11 @@ def run():
 	test_reader()
 	test_wdms()
 	test_sql_mysql()
+	test_monthly_tables()
+	test_discover()
 	test_sent_ledger()
 	test_config_sources()
+	test_easytime()
 
 	failed = [r for r in _results if not r[1]]
 	print(f"\n{len(_results) - len(failed)}/{len(_results)} passed")

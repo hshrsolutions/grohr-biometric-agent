@@ -28,6 +28,14 @@ again. On a first run with no cursor the read starts at the device's
 
 Rows are read in pages of `max_rows`, oldest first, so a long backlog is worked
 through in one cycle without holding a year of history in memory.
+
+Monthly tables
+--------------
+eSSL eTimeTrackLite keeps punches in one table per month (`DeviceLogs_9_2026`).
+Set `table_pattern` instead of `table` and the reader reads every month from the
+start of the window to now, oldest first, skipping months that have no table:
+
+    "table_pattern": "DeviceLogs_{m}_{Y}"      {m} month 1-12, {mm} month 01-12, {Y} year
 """
 
 from datetime import datetime, timedelta
@@ -91,8 +99,27 @@ class SQLReader:
 
 	# --------------------------------------------------------------- query
 
-	def query(self, since, limit=None):
+	def tables_for(self, start, now=None):
+		"""Tables to read for a window beginning at `start`, oldest first.
+		One table, unless `table_pattern` names monthly tables."""
+		pattern = self.settings.get("table_pattern")
+		if not pattern:
+			return [self.settings["table"]]
+		now = now or datetime.now()
+		year, month = start.year, start.month
+		names = []
+		while (year, month) <= (now.year, now.month):
+			names.append(
+				pattern.replace("{mm}", f"{month:02d}").replace("{m}", str(month)).replace("{Y}", str(year))
+			)
+			month += 1
+			if month > 12:
+				year, month = year + 1, 1
+		return names
+
+	def query(self, since, limit=None, table=None):
 		s = self.settings
+		table = table or s["table"]
 		columns = [self.q(s["user_column"]), self.q(s["time_column"])]
 		columns.append(self.q(s["serial_column"]) if s.get("serial_column") else "NULL")
 		columns.append(self.q(s["state_column"]) if s.get("state_column") else "NULL")
@@ -111,7 +138,7 @@ class SQLReader:
 		top = f"TOP {int(limit)} " if (limit and self.engine == "mssql") else ""
 		tail = f" LIMIT {int(limit)}" if (limit and self.engine == "mysql") else ""
 		sql = (
-			f"SELECT {top}{', '.join(columns)} FROM {self.q(s['table'])}{clause} "
+			f"SELECT {top}{', '.join(columns)} FROM {self.q(table)}{clause} "
 			f"ORDER BY {self.q(s['time_column'])} ASC{tail}"
 		)
 		return sql, params
@@ -138,27 +165,14 @@ class SQLReader:
 			cursor = connection.cursor()
 			if self.engine == "mysql":
 				_read_only_session(cursor)
-			cursor_time = start
-			for _ in range(int(self.settings["max_pages"] or 50)):
-				sql, params = self.query(cursor_time, limit)
-				cursor.execute(sql, params)
-				rows = list(cursor.fetchall())
-				rows_all.extend(rows)
-				if len(rows) < limit:
-					break
-				last = rows[-1][1]
-				if not isinstance(last, datetime) or (cursor_time and last <= cursor_time):
-					# A full page all in one second — cannot page past it safely.
-					self.log.warning(
-						f"{self.device.get('name')}: {limit} rows share one timestamp; raise max_rows."
-					)
-					break
-				cursor_time = last
-			else:
-				self.log.warning(
-					f"{self.device.get('name')}: stopped after {self.settings['max_pages']} pages; "
-					"the rest will be read next cycle."
-				)
+			tables = self.tables_for(start)
+			if self.settings.get("table_pattern"):
+				existing = _list_tables(cursor, self.engine)
+				if existing is not None:
+					have = {t.split(".")[-1].lower() for t in existing}
+					tables = [t for t in tables if t.split(".")[-1].lower() in have]
+			for table in tables:
+				self._read_table(cursor, table, start, limit, rows_all)
 		finally:
 			if connection:
 				try:
@@ -167,6 +181,26 @@ class SQLReader:
 					pass
 
 		return self.to_punches(rows_all)
+
+	def _read_table(self, cursor, table, start, limit, rows_all):
+		cursor_time = start
+		for _ in range(int(self.settings["max_pages"] or 50)):
+			sql, params = self.query(cursor_time, limit, table)
+			cursor.execute(sql, params)
+			rows = list(cursor.fetchall())
+			rows_all.extend(rows)
+			if len(rows) < limit:
+				return
+			last = rows[-1][1]
+			if not isinstance(last, datetime) or (cursor_time and last <= cursor_time):
+				# A full page all in one second — cannot page past it safely.
+				self.log.warning(f"{self.device.get('name')}: {limit} rows share one timestamp; raise max_rows.")
+				return
+			cursor_time = last
+		self.log.warning(
+			f"{self.device.get('name')}: stopped after {self.settings['max_pages']} pages of {table}; "
+			"the rest will be read next cycle."
+		)
 
 	def to_punches(self, rows):
 		punches, seen = [], set()
@@ -207,15 +241,27 @@ class SQLReader:
 				_read_only_session(cursor)
 			out(f"  Connected ({self.engine}).")
 			tables = _list_tables(cursor, self.engine)
-			if tables is not None and s["table"].split(".")[-1].lower() not in [t.split(".")[-1].lower() for t in tables]:
-				out(f"  TABLE {s['table']!r} NOT FOUND. Tables in this database:")
+			have = {t.split(".")[-1].lower() for t in tables} if tables is not None else None
+			table = s["table"]
+			if s.get("table_pattern"):
+				recent = self.tables_for(datetime.now() - timedelta(days=100))
+				found = [t for t in recent if have is None or t.split(".")[-1].lower() in have]
+				if not found:
+					out(f"  NO TABLE MATCHING {s['table_pattern']!r} for the last months. Tables in this database:")
+					for name in (tables or [])[:200]:
+						out(f"    {name}")
+					return False
+				table = found[-1]
+				out(f"  Monthly tables in the last 100 days: {', '.join(found)} (checking {table})")
+			elif have is not None and table.split(".")[-1].lower() not in have:
+				out(f"  TABLE {table!r} NOT FOUND. Tables in this database:")
 				for name in tables[:200]:
 					out(f"    {name}")
 				return False
 
 			top = "TOP 1 " if self.engine == "mssql" else ""
 			tail = " LIMIT 1" if self.engine == "mysql" else ""
-			cursor.execute(f"SELECT {top}* FROM {self.q(s['table'])}{tail}")
+			cursor.execute(f"SELECT {top}* FROM {self.q(table)}{tail}")
 			cursor.fetchall()
 			names = [d[0] for d in (cursor.description or [])]
 			out(f"  Columns: {', '.join(names)}")
@@ -228,20 +274,20 @@ class SQLReader:
 				return False
 
 			t = self.q(s["time_column"])
-			cursor.execute(f"SELECT COUNT(*), MIN({t}), MAX({t}) FROM {self.q(s['table'])}")
+			cursor.execute(f"SELECT COUNT(*), MIN({t}), MAX({t}) FROM {self.q(table)}")
 			count, first, last = cursor.fetchall()[0]
 			out(f"  Rows: {count}   first punch: {first}   latest punch: {last}")
 
 			if s.get("serial_column"):
 				sc = self.q(s["serial_column"])
 				cursor.execute(
-					f"SELECT {sc}, COUNT(*), MAX({t}) FROM {self.q(s['table'])} GROUP BY {sc} ORDER BY 3 DESC"
+					f"SELECT {sc}, COUNT(*), MAX({t}) FROM {self.q(table)} GROUP BY {sc} ORDER BY 3 DESC"
 				)
 				out("  Readers (serial, punches, latest) — register each serial as a Biometric Device:")
 				for serial, n, latest in cursor.fetchall()[:100]:
 					out(f"    {serial!s:<24} {n:>9}   {latest}")
 
-			sql, params = self.query(None, 5)
+			sql, params = self.query(None, 5, table)
 			sql = sql.replace("ASC", "DESC")
 			cursor.execute(sql, params)
 			out("  Latest punches (user, time, serial, state):")

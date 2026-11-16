@@ -148,7 +148,49 @@ class Agent:
 	def heartbeat(self):
 		"""Sent every cycle, punches or not. Silence has to mean something."""
 		serials = [d["serial_no"] for d in self.devices if d.get("serial_no")]
-		self.server.heartbeat(__version__, serials)
+		reply = self.server.heartbeat(__version__, serials) or {}
+		requests_ = reply.get("profile_requests") if isinstance(reply, dict) else None
+		if requests_:
+			self.answer_profiles(requests_)
+		pushes = reply.get("user_pushes") if isinstance(reply, dict) else None
+		if pushes:
+			self.apply_user_pushes(pushes)
+
+	def apply_user_pushes(self, pushes):
+		"""The server wants these employees created, updated or removed in Easy Time
+		Pro. Without an `easytime` block in config.json we say so instead of guessing;
+		either way the punch cycle is never affected."""
+		from grohr_agent import easytime
+
+		settings = self.config.get("easytime")
+		if not settings or not settings.get("url"):
+			results = [{"sync_id": p.get("sync_id"), "outcome": "Error",
+			            "message": "This agent has no `easytime` block in config.json."} for p in pushes]
+		else:
+			results = easytime.run(settings, pushes, self.log)
+		for r in results:
+			self.log.info(f"Easy Time Pro {r.get('emp_code') or ''}: {r.get('outcome')} {r.get('message') or ''}".rstrip())
+		try:
+			self.server.user_push_results(results)
+		except Exception as e:
+			# The server re-sends unanswered requests; the API calls are idempotent.
+			self.log.warning(f"Could not report Easy Time Pro results: {type(e).__name__}: {e}")
+
+	def answer_profiles(self, ids):
+		"""The server wants names and photos for these IDs (HR just set or changed
+		them). A failure here is logged and never costs the punch cycle."""
+		from grohr_agent.profiles import lookup
+
+		try:
+			found = lookup(self.config, [str(i) for i in ids][:50], self.log)
+		except Exception as e:
+			self.log.error(f"Profile lookup failed: {type(e).__name__}: {e}")
+			found = [{"device_user_id": i, "found": False, "error": f"{type(e).__name__}: {e}"[:300]} for i in ids[:50]]
+		try:
+			result = self.server.profiles(found)
+			self.log.info(f"Profiles sent for {len(found)} ID(s): {result}")
+		except Exception as e:
+			self.log.warning(f"Could not send profiles: {type(e).__name__}: {e}")
 
 	# ------------------------------------------------------------------- loop
 

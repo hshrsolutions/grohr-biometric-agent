@@ -71,6 +71,12 @@ class Server:
 			{"connector": self.config.connector, "agent_version": agent_version, "devices": devices or []},
 		)
 
+	def profiles(self, profiles):
+		return self._call("profiles", {"connector": self.config.connector, "profiles": profiles})
+
+	def user_push_results(self, results):
+		return self._call("user_push_results", {"connector": self.config.connector, "results": results})
+
 	def push(self, punches):
 		return self._call("push", {"connector": self.config.connector, "punches": punches})
 

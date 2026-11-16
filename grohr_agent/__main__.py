@@ -5,6 +5,9 @@
 	python -m grohr_agent --status   what is in the spool
 	python -m grohr_agent --probe    test every database source in config.json
 	                                 (read-only, needs no server) and describe it
+	python -m grohr_agent --probe-easytime
+	                                 log in to Easy Time Pro (config `easytime`) and
+	                                 list its departments and areas; changes nothing
 """
 
 import argparse
@@ -25,6 +28,8 @@ def main(argv=None):
 	parser.add_argument("--status", action="store_true", help="print spool counts and exit")
 	parser.add_argument("--probe", action="store_true",
 	                    help="connect to each database source in config.json and describe it (read-only)")
+	parser.add_argument("--probe-easytime", action="store_true",
+	                    help="log in to Easy Time Pro and list departments and areas (read-only)")
 	parser.add_argument("--verbose", action="store_true")
 	parser.add_argument("--version", action="version", version=__version__)
 	args = parser.parse_args(argv)
@@ -44,6 +49,15 @@ def main(argv=None):
 
 	if args.probe:
 		return probe(config)
+
+	if args.probe_easytime:
+		from grohr_agent import easytime
+
+		try:
+			return easytime.probe(config.get("easytime"))
+		except easytime.EasyTimeError as e:
+			print(f"  FAILED: {e}")
+			return 1
 
 	try:
 		acquire()
