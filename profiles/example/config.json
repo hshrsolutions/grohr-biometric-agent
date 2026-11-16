@@ -1,0 +1,29 @@
+{
+  "_about": "Example customer profile. Copy this folder to profiles/<yourcompany>/ and edit, then install with --customer <yourcompany>. When the agent runs on the same Linux box as the site, site_url is the local web port and host_header the site name. Secrets are typed in by the installer - never commit them here.",
+  "site_url": "http://127.0.0.1:8000",
+  "host_header": "yourcompany.grohrms.cloud",
+  "connector": "Office Agent",
+  "api_key": "",
+  "api_secret": "",
+  "poll_interval_seconds": 300,
+  "batch_size": 200,
+  "verify_tls": false,
+  "log_dir": "logs",
+  "spool_path": "spool.sqlite3",
+  "sources": {
+    "_note": "eSSL Time Pro / Easy Time Pro / BioTime keep punches in iclock_transaction (this block). eTimeTrackLite keeps one table per month: replace table with \"table_pattern\": \"DeviceLogs_{m}_{Y}\", user_column UserId, time_column LogDate, serial_column DeviceId, state_column Direction. Engine is mssql for SQL Server. Only if the readers feed a vendor attendance database. If the readers are ZKTeco/eSSL devices reachable on the LAN (port 4370), delete this block and register them in GroHR with driver 'ZKTeco' - no database needed.",
+    "*": {
+      "engine": "mysql",
+      "host": "",
+      "port": 3306,
+      "database": "",
+      "user": "",
+      "password": "",
+      "table": "iclock_transaction",
+      "user_column": "emp_code",
+      "time_column": "punch_time",
+      "serial_column": "terminal_sn",
+      "state_column": "punch_state"
+    }
+  }
+}
