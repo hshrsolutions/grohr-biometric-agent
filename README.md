@@ -46,6 +46,9 @@ python -m grohr_agent --probe-zk 192.168.1.201 --zk-password 1234   # if a Comm 
 python -m grohr_agent --probe-zk 192.168.1.201 --zk-udp             # if TCP times out
 ```
 
+Don't know the IP? `python -m grohr_agent --scan-zk` (or `--scan-zk 192.168.1.0/24`)
+lists every terminal answering on port 4370 with its serial and model.
+
 Prefer a page to a terminal? `python -m grohr_agent --ui` and open
 `http://127.0.0.1:8765` — the same test, a preview of the newest punches, and the
 spool/log status. It listens on this PC only and is read-only.

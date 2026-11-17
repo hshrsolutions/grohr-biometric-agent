@@ -41,6 +41,12 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:
 </style></head><body><main>
 <h1>GroHR Biometric Agent</h1><div class="sub" id="ver"></div>
 
+<div class="card"><h2>Find terminals on the network</h2>
+<div class="row">
+<label>Network<input type="text" id="net" placeholder="auto (this PC's /24)"></label>
+<button id="scan">Scan</button></div>
+<div id="sres"></div></div>
+
 <div class="card"><h2>Connect to a ZKTeco / eSSL terminal (LX50)</h2>
 <div class="row">
 <label>IP address<input type="text" id="ip" placeholder="192.168.1.201"></label>
@@ -62,6 +68,13 @@ const $=i=>document.getElementById(i);
 const esc=s=>String(s??"—").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const body=()=>JSON.stringify({ip:$("ip").value.trim(),port:+$("port").value||4370,password:+$("pw").value||0,udp:$("udp").checked});
 async function post(u){const r=await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:body()});return r.json()}
+$("scan").onclick=async()=>{$("scan").disabled=true;$("sres").innerHTML="<p>Scanning port "+(+$("port").value||4370)+"…</p>";
+  try{const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({network:$("net").value.trim(),port:+$("port").value||4370,password:+$("pw").value||0})});const d=await r.json();
+    if(!d.ok){$("sres").innerHTML='<p class="bad">'+esc(d.error)+"</p>"}
+    else if(!d.found.length){$("sres").innerHTML="<p>Scanned "+d.scanned+" addresses on "+esc(d.network)+": none found. A UDP-only terminal won't show here; enter its IP below and tick Force UDP.</p>"}
+    else $("sres").innerHTML="<p>"+d.found.length+" found on "+esc(d.network)+" ("+d.scanned+" scanned).</p><table><tr><th>IP</th><th>Port</th><th>Terminal</th><th></th></tr>"+d.found.map((x,i)=>"<tr><td>"+esc(x.ip)+"</td><td>"+x.port+"</td><td>"+(x.status=="ok"?esc(x.device)+" · "+esc(x.serial):'<span class="warn">'+(x.status=="needs_key"?"open — Comm Key needed?":"open")+"</span>")+'</td><td><button class="sec" data-i="'+i+'">Use</button></td></tr>').join("")+"</table>";
+    document.querySelectorAll("#sres button[data-i]").forEach(b=>b.onclick=()=>{const x=d.found[b.dataset.i];$("ip").value=x.ip;$("port").value=x.port;$("go").click();$("go").scrollIntoView()})
+  }catch(e){$("sres").innerHTML='<p class="bad">'+esc(e)+"</p>"}$("scan").disabled=false};
 $("go").onclick=async()=>{
   if(!$("ip").value.trim()){$("res").innerHTML='<p class="bad">Enter the terminal IP.</p>';return}
   $("go").disabled=true;$("res").innerHTML='<p>Connecting…</p>';
@@ -124,6 +137,15 @@ def make_handler(config):
 			try:
 				size = min(int(self.headers.get("Content-Length") or 0), 4096)
 				req = json.loads(self.rfile.read(size) or b"{}")
+				if self.path == "/api/scan":
+					from grohr_agent.discover_zk import ScanError, scan
+
+					try:
+						result = scan(req.get("network") or None, ports=(int(req.get("port") or 4370),),
+						              password=int(req.get("password") or 0))
+					except ScanError as e:
+						return self._send(200, {"ok": False, "error": str(e)})
+					return self._send(200, {"ok": True, **result})
 				device = {
 					"name": "ui", "serial_no": None, "ip_address": str(req["ip"]),
 					"port": int(req.get("port") or 4370),

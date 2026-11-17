@@ -2,6 +2,13 @@
 
 ## 0.6.0 — 2026-11-17
 
+- **Network scan for ZKTeco terminals** — `--scan-zk [NETWORK]` (default: this PC's /24)
+  and a *Find terminals on the network* card in the UI. TCP-checks the ZK port on each
+  address, then identifies hits read-only (serial, model, firmware); a terminal that needs
+  its Comm Key is listed as such (`--zk-password`). **Use** fills the connect form.
+  Private networks only, max 1024 addresses, nothing written. UDP-only terminals are not
+  found by a TCP scan. Offline tests 133.
+
 - **Local web UI** — `python -m grohr_agent --ui` then open http://127.0.0.1:8765 (works
   before config.json exists). Test a terminal (IP, port, Comm Key, Force UDP) and see its
   serial / model / firmware / clock / counts, preview its newest 20 punches (nothing is

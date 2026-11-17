@@ -8,6 +8,8 @@
 	python -m grohr_agent --probe-zk IP [--zk-port 4370] [--zk-password KEY] [--zk-udp]
 	                                 connect straight to a ZKTeco/eSSL terminal (LX50, ...)
 	                                 and describe it; read-only, needs no server
+	python -m grohr_agent --scan-zk [192.168.1.0/24] [--zk-password KEY]
+	                                 find ZKTeco terminals on the LAN (port 4370), read-only
 	python -m grohr_agent --ui [--ui-port 8765]
 	                                 local web page (127.0.0.1 only): test a terminal,
 	                                 preview its punches, see spool and log
@@ -38,6 +40,8 @@ def main(argv=None):
 	                    help="log in to Easy Time Pro and list departments and areas (read-only)")
 	parser.add_argument("--probe-zk", metavar="IP",
 	                    help="connect directly to a ZKTeco terminal and describe it (read-only)")
+	parser.add_argument("--scan-zk", nargs="?", const="auto", metavar="NETWORK",
+	                    help="scan a private network (default: this PC's /24) for ZKTeco terminals")
 	parser.add_argument("--zk-port", type=int, default=4370)
 	parser.add_argument("--zk-password", type=int, default=0, help="terminal Comm Key")
 	parser.add_argument("--zk-udp", action="store_true", help="force UDP")
@@ -46,6 +50,25 @@ def main(argv=None):
 	parser.add_argument("--verbose", action="store_true")
 	parser.add_argument("--version", action="version", version=__version__)
 	args = parser.parse_args(argv)
+
+	if args.scan_zk:
+		from grohr_agent.discover_zk import ScanError, scan
+
+		try:
+			result = scan(None if args.scan_zk == "auto" else args.scan_zk, ports=(args.zk_port,),
+			              password=args.zk_password)
+		except ScanError as e:
+			print(f"Scan error: {e}")
+			return 2
+		print(f"Scanned {result['scanned']} addresses on {result['network']} (port {args.zk_port}).")
+		for r in result["found"]:
+			label = {"ok": f"{r.get('device')} serial {r.get('serial')} fw {r.get('firmware')}",
+			         "needs_key": "port open, not identified (Comm Key set? try --zk-password)",
+			         "open": "port open"}[r["status"]]
+			print(f"  {r['ip']}:{r['port']}  {label}")
+		if not result["found"]:
+			print("  none found. UDP-only terminals need --probe-zk IP --zk-udp.")
+		return 0 if result["found"] else 1
 
 	if args.probe_zk:
 		from grohr_agent.devices.zkteco import ZKTecoReader

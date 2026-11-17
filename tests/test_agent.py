@@ -748,6 +748,44 @@ def test_ui():
 	httpd.shutdown()
 
 
+def test_scan():
+	print("ZKTeco scan:")
+	import socket
+	import threading
+
+	from grohr_agent import discover_zk
+	from grohr_agent.discover_zk import ScanError, hosts_in, scan
+
+	for bad in ("8.8.8.0/24", "10.0.0.0/8", "nonsense", "2001:db8::/64"):
+		try:
+			hosts_in(bad)
+			ok = False
+		except ScanError:
+			ok = True
+		check(f"refuses {bad}", ok)
+	check("a /24 is 254 hosts", len(hosts_in("192.168.1.0/24")) == 254)
+	check("a /22 is allowed", len(hosts_in("10.1.0.0/22")) == 1022)
+
+	srv = socket.socket()
+	srv.bind(("127.0.0.1", 0))
+	srv.listen(5)
+	port = srv.getsockname()[1]
+	discover_zk.hosts_in = lambda cidr: ["127.0.0.1", "127.0.0.2"]  # loopback stands in for a LAN
+	fake = _LX50([])
+	discover_zk.ZKTecoReader.connect = lambda self: fake
+	r = scan("192.168.1.0/24", ports=(port,), timeout=0.3)
+	check("an open port is found, a closed one is not", [x["ip"] for x in r["found"]] == ["127.0.0.1"], r)
+	check("it is identified read-only", r["found"][0]["status"] == "ok" and r["found"][0]["serial"] == "LX50SN001", r)
+
+	def refuse(self):
+		raise OSError("auth failed")
+
+	discover_zk.ZKTecoReader.connect = refuse
+	r = scan("192.168.1.0/24", ports=(port,), timeout=0.3)
+	check("an unidentifiable terminal is reported as needing the key", r["found"][0]["status"] == "needs_key", r)
+	srv.close()
+
+
 def run():
 	print("GroHR biometric agent — offline tests\n")
 	test_config()
@@ -757,6 +795,7 @@ def run():
 	test_reader()
 	test_zkteco_direct()
 	test_ui()
+	test_scan()
 	test_wdms()
 	test_sql_mysql()
 	test_monthly_tables()
