@@ -8,6 +8,9 @@
 	python -m grohr_agent --probe-zk IP [--zk-port 4370] [--zk-password KEY] [--zk-udp]
 	                                 connect straight to a ZKTeco/eSSL terminal (LX50, ...)
 	                                 and describe it; read-only, needs no server
+	python -m grohr_agent --ui [--ui-port 8765]
+	                                 local web page (127.0.0.1 only): test a terminal,
+	                                 preview its punches, see spool and log
 	python -m grohr_agent --probe-easytime
 	                                 log in to Easy Time Pro (config `easytime`) and
 	                                 list its departments and areas; changes nothing
@@ -38,6 +41,8 @@ def main(argv=None):
 	parser.add_argument("--zk-port", type=int, default=4370)
 	parser.add_argument("--zk-password", type=int, default=0, help="terminal Comm Key")
 	parser.add_argument("--zk-udp", action="store_true", help="force UDP")
+	parser.add_argument("--ui", action="store_true", help="serve the local web UI on 127.0.0.1")
+	parser.add_argument("--ui-port", type=int, default=8765)
 	parser.add_argument("--verbose", action="store_true")
 	parser.add_argument("--version", action="version", version=__version__)
 	args = parser.parse_args(argv)
@@ -54,10 +59,23 @@ def main(argv=None):
 	try:
 		config = load(args.config)
 	except ConfigError as e:
+		if args.ui:
+			# Commissioning before config.json exists: the probe still works.
+			from grohr_agent.config import Config
+
+			print(f"Note: {e}\nStarting the UI without a config (status will be empty).")
+			from grohr_agent.ui import serve
+
+			return serve(Config(log_dir="logs", spool_path="spool.sqlite3"), args.ui_port)
 		print(f"Configuration error: {e}", file=sys.stderr)
 		return 2
 
 	log = setup(config.log_dir, verbose=args.verbose)
+
+	if args.ui:
+		from grohr_agent.ui import serve
+
+		return serve(config, args.ui_port)
 
 	if args.status:
 		counts = Spool(config.spool_path).counts()

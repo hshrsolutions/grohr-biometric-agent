@@ -46,6 +46,10 @@ python -m grohr_agent --probe-zk 192.168.1.201 --zk-password 1234   # if a Comm 
 python -m grohr_agent --probe-zk 192.168.1.201 --zk-udp             # if TCP times out
 ```
 
+Prefer a page to a terminal? `python -m grohr_agent --ui` and open
+`http://127.0.0.1:8765` — the same test, a preview of the newest punches, and the
+spool/log status. It listens on this PC only and is read-only.
+
 If the probe needs a Comm Key or UDP, put the same in `config.json` → `zkteco`
 (see `config.example.json`). Then `--once` to prove the whole path.
 

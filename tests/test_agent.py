@@ -190,7 +190,14 @@ class _LX50(_Conn):
 	def __init__(self, records, serial="LX50SN001", clock=None):
 		super().__init__(records)
 		self.serial, self.clock = serial, clock or datetime.now()
-		self.users, self.users_cap, self.records_n, self.rec_cap = 12, 3000, len(records), 100000
+		self.rows = records
+		# pyzk exposes the counts as ints named users/records after read_sizes()
+		self.users, self.users_cap, self.records, self.records_cap = 12, 3000, len(records), 100000
+		self.rec_cap = 100000
+
+	def get_attendance(self):
+		self.calls.append("get_attendance")
+		return self.rows
 
 	def get_serialnumber(self):
 		return self.serial
@@ -694,6 +701,53 @@ def test_discover():
 	essl_discover.SQLReader.connect = SQLReader_connect_original
 
 
+def test_ui():
+	print("Local UI:")
+	import threading
+	import urllib.request
+	from http.server import ThreadingHTTPServer
+
+	from grohr_agent import ui
+	from grohr_agent.config import Config
+
+	base = datetime.now().replace(microsecond=0)
+	fake = _LX50([_Record(1, "7", base), _Record(2, "8", base + timedelta(minutes=1))])
+	ui.ZKTecoReader.connect = lambda self: fake  # no hardware
+	d = tempfile.mkdtemp(prefix="grohr-ui-")
+	Spool(os.path.join(d, "s.sqlite3")).close()
+	cfg = Config(log_dir=d, spool_path=os.path.join(d, "s.sqlite3"), site_url="https://x", connector="C")
+	httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.make_handler(cfg))
+	threading.Thread(target=httpd.serve_forever, daemon=True).start()
+	url = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+	def call(path, data=None, headers=None):
+		req = urllib.request.Request(url + path, data=None if data is None else json.dumps(data).encode(),
+		                             headers=headers or {"Content-Type": "application/json"})
+		try:
+			with urllib.request.urlopen(req, timeout=5) as r:
+				return r.status, r.read().decode()
+		except urllib.error.HTTPError as e:
+			return e.code, e.read().decode()
+
+	code, html = call("/")
+	check("the page is served", code == 200 and "Test connection" in html)
+	code, out = call("/api/status")
+	check("status shows spool counts", code == 200 and json.loads(out)["spool"]["pending"] == 0, out)
+	code, out = call("/api/probe", {"ip": "192.0.2.9"})
+	info = json.loads(out)
+	check("probe returns the terminal info", info["ok"] and info["info"]["serial"] == "LX50SN001", out)
+	code, out = call("/api/punches", {"ip": "192.0.2.9"})
+	rows = json.loads(out)["punches"]
+	check("punch preview is newest first", [r["device_user_id"] for r in rows] == ["8", "7"], rows)
+	code, _ = call("/api/probe", {"ip": "x"}, {"Content-Type": "text/plain"})
+	check("a non-JSON POST is refused", code == 403)
+	code, _ = call("/api/probe", {"ip": "x"}, {"Content-Type": "application/json", "Host": "evil.example"})
+	check("a foreign Host header is refused", code == 403)
+	code, out = call("/api/probe", {})
+	check("a bad request is an error message, not a crash", json.loads(out)["ok"] is False)
+	httpd.shutdown()
+
+
 def run():
 	print("GroHR biometric agent — offline tests\n")
 	test_config()
@@ -702,6 +756,7 @@ def run():
 	test_backoff()
 	test_reader()
 	test_zkteco_direct()
+	test_ui()
 	test_wdms()
 	test_sql_mysql()
 	test_monthly_tables()

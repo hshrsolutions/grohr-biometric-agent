@@ -2,6 +2,13 @@
 
 ## 0.6.0 — 2026-11-17
 
+- **Local web UI** — `python -m grohr_agent --ui` then open http://127.0.0.1:8765 (works
+  before config.json exists). Test a terminal (IP, port, Comm Key, Force UDP) and see its
+  serial / model / firmware / clock / counts, preview its newest 20 punches (nothing is
+  sent), see spool counts and the log tail, and get the `zkteco` snippet to paste into
+  config.json. Standard library only; 127.0.0.1 only; foreign Host headers and non-JSON
+  POSTs refused; read-only. Offline tests 124.
+
 - **ZKTeco LX50 direct connector.** The `ZKTeco` reader talks to the terminal itself over
   the LAN (TCP/UDP 4370) — no BioTime / Easy Time Pro / ZKTime in between. New optional
   `zkteco` block in config.json (keyed by device name, serial or `*`): `password` (the

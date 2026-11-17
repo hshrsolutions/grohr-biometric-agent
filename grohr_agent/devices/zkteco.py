@@ -163,40 +163,63 @@ class ZKTecoReader:
 
 	# -- commissioning ------------------------------------------------------
 
-	def probe(self, out=print):
-		"""Read-only: connect and describe the terminal. Returns True if it
-		answered. Changes nothing on the device."""
-		conn = None
-		try:
-			conn = self.connect()
-		except Exception as e:
-			out(f"  FAILED to connect: {type(e).__name__}: {e}")
-			out("  Check: IP/port (default 4370), same network, Comm Key (`password`), "
-			    "and try `force_udp` / `ommit_ping` in config.json > zkteco.")
-			return False
+	def describe(self):
+		"""Read-only: connect and describe the terminal as a dict. Raises if it
+		cannot connect. Changes nothing on the device."""
+		conn = self.connect()
 		try:
 			get = lambda m: self._safe(conn, m)
-			out(f"  serial:    {get('get_serialnumber')}")
-			out(f"  device:    {get('get_device_name')}  ({get('get_platform')})")
-			out(f"  firmware:  {get('get_firmware_version')}")
-			out(f"  MAC:       {get('get_mac')}")
+			info = {
+				"serial": get("get_serialnumber"),
+				"device": get("get_device_name"),
+				"platform": get("get_platform"),
+				"firmware": get("get_firmware_version"),
+				"mac": get("get_mac"),
+			}
 			device_time = get("get_time")
 			if device_time:
-				drift = int((datetime.now() - device_time).total_seconds())
-				out(f"  clock:     {device_time:%Y-%m-%d %H:%M:%S}  (PC differs by {drift:+d}s)")
+				info["clock"] = device_time.strftime("%Y-%m-%d %H:%M:%S")
+				info["drift_seconds"] = int((datetime.now() - device_time).total_seconds())
 			try:
 				conn.read_sizes()  # pyzk stores the counts on the connection
-				out(f"  users:     {getattr(conn, 'users', '?')} / {getattr(conn, 'users_cap', '?')}")
-				out(f"  punches:   {getattr(conn, 'records', '?')} / {getattr(conn, 'rec_cap', '?')}")
+				info.update(users=getattr(conn, "users", None), users_cap=getattr(conn, "users_cap", None),
+				            punches=getattr(conn, "records", None), punches_cap=getattr(conn, "rec_cap", None))
 			except Exception:
-				out("  users/punches: not reported by this firmware")
-			serial = str(get("get_serialnumber") or "").strip()
-			expected = str(self.device.get("serial_no") or "").strip()
-			if expected and serial and serial.upper() != expected.upper():
-				out(f"  NOTE: GroHR/config serial is {expected!r} — register this terminal under {serial!r}.")
-			return True
+				pass
+			return info
 		finally:
 			try:
 				conn.disconnect()
 			except Exception:
 				pass
+
+	def recent(self, limit=20):
+		"""Read-only preview of the newest punches on the terminal (nothing is
+		spooled or sent)."""
+		return self.read()[-int(limit):][::-1]
+
+	def probe(self, out=print):
+		"""Print `describe()`. Returns True if the terminal answered."""
+		try:
+			info = self.describe()
+		except Exception as e:
+			out(f"  FAILED to connect: {type(e).__name__}: {e}")
+			out("  Check: IP/port (default 4370), same network, Comm Key (`password`), "
+			    "and try `force_udp` / `ommit_ping` in config.json > zkteco.")
+			return False
+		out(f"  serial:    {info['serial']}")
+		out(f"  device:    {info['device']}  ({info['platform']})")
+		out(f"  firmware:  {info['firmware']}")
+		out(f"  MAC:       {info['mac']}")
+		if "clock" in info:
+			out(f"  clock:     {info['clock']}  (PC differs by {info['drift_seconds']:+d}s)")
+		if info.get("users") is not None:
+			out(f"  users:     {info['users']} / {info['users_cap']}")
+			out(f"  punches:   {info['punches']} / {info['punches_cap']}")
+		else:
+			out("  users/punches: not reported by this firmware")
+		expected = str(self.device.get("serial_no") or "").strip()
+		serial = str(info["serial"] or "").strip()
+		if expected and serial and serial.upper() != expected.upper():
+			out(f"  NOTE: GroHR/config serial is {expected!r} — register this terminal under {serial!r}.")
+		return True
