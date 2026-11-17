@@ -5,6 +5,9 @@
 	python -m grohr_agent --status   what is in the spool
 	python -m grohr_agent --probe    test every database source in config.json
 	                                 (read-only, needs no server) and describe it
+	python -m grohr_agent --probe-zk IP [--zk-port 4370] [--zk-password KEY] [--zk-udp]
+	                                 connect straight to a ZKTeco/eSSL terminal (LX50, ...)
+	                                 and describe it; read-only, needs no server
 	python -m grohr_agent --probe-easytime
 	                                 log in to Easy Time Pro (config `easytime`) and
 	                                 list its departments and areas; changes nothing
@@ -30,9 +33,23 @@ def main(argv=None):
 	                    help="connect to each database source in config.json and describe it (read-only)")
 	parser.add_argument("--probe-easytime", action="store_true",
 	                    help="log in to Easy Time Pro and list departments and areas (read-only)")
+	parser.add_argument("--probe-zk", metavar="IP",
+	                    help="connect directly to a ZKTeco terminal and describe it (read-only)")
+	parser.add_argument("--zk-port", type=int, default=4370)
+	parser.add_argument("--zk-password", type=int, default=0, help="terminal Comm Key")
+	parser.add_argument("--zk-udp", action="store_true", help="force UDP")
 	parser.add_argument("--verbose", action="store_true")
 	parser.add_argument("--version", action="version", version=__version__)
 	args = parser.parse_args(argv)
+
+	if args.probe_zk:
+		from grohr_agent.devices.zkteco import ZKTecoReader
+
+		print(f"ZKTeco terminal {args.probe_zk}:{args.zk_port}")
+		reader = ZKTecoReader({"name": "probe", "serial_no": None, "ip_address": args.probe_zk,
+		                       "port": args.zk_port,
+		                       "zk": {"password": args.zk_password, "force_udp": args.zk_udp}}, None)
+		return 0 if reader.probe() else 1
 
 	try:
 		config = load(args.config)

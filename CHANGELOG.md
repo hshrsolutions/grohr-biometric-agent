@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0 — 2026-11-17
+
+- **ZKTeco LX50 direct connector.** The `ZKTeco` reader talks to the terminal itself over
+  the LAN (TCP/UDP 4370) — no BioTime / Easy Time Pro / ZKTime in between. New optional
+  `zkteco` block in config.json (keyed by device name, serial or `*`): `password` (the
+  terminal's Comm Key), `timeout`, `force_udp`, `ommit_ping`, `lookback_minutes`
+  (default 24 h; the sent-ledger de-duplicates), `verify_serial`.
+- **Serial check**: a terminal whose serial is not the one registered in GroHR is refused,
+  so a wrong or re-used IP cannot file punches under another device.
+- **Clock-drift warning** when the terminal clock is >5 min off the PC. Still never writes
+  to the terminal (no users, no time sync), never disables it, never clears its log.
+- **`--probe-zk IP [--zk-port N] [--zk-password KEY] [--zk-udp]`**: read-only commissioning —
+  prints serial, model, firmware, MAC, clock, user and punch counts; needs no server.
+  Records with a blank user ID are dropped. Offline tests 117.
+
 ## 0.5.0 — 2026-10-27
 
 - **Monthly punch tables** (`table_pattern`, e.g. `DeviceLogs_{m}_{Y}`): reads eSSL

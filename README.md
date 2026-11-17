@@ -35,6 +35,20 @@ That is the one thing this fork changes, and everything else follows from it.
 | Devices polled sequentially; one dead reader delays the rest | A reader that fails, fails alone |
 | Device list, punch direction and shift mapping live in the client config | All server-side; adding a reader is a desk action, not a site visit |
 
+## ZKTeco LX50 (direct, no attendance software)
+
+Register the terminal in GroHR (driver `ZKTeco`, its LAN IP, port 4370, serial from the
+terminal's *Menu → System Info*), then from the agent PC on the same network:
+
+```bash
+python -m grohr_agent --probe-zk 192.168.1.201            # read-only: serial, firmware, counts
+python -m grohr_agent --probe-zk 192.168.1.201 --zk-password 1234   # if a Comm Key is set
+python -m grohr_agent --probe-zk 192.168.1.201 --zk-udp             # if TCP times out
+```
+
+If the probe needs a Comm Key or UDP, put the same in `config.json` → `zkteco`
+(see `config.example.json`). Then `--once` to prove the whole path.
+
 ## Install
 
 One command per platform, from the unzipped release

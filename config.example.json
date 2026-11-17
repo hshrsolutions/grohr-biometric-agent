@@ -30,6 +30,17 @@
       "max_rows": 5000
     }
   },
+  "zkteco": {
+    "_note": "Optional. Direct LAN connection to ZKTeco/eSSL terminals (LX50, K40, ...). Keyed by device name, serial or '*'. Test first with: python -m grohr_agent --probe-zk 192.168.1.201",
+    "*": {
+      "password": 0,
+      "timeout": 30,
+      "force_udp": false,
+      "ommit_ping": false,
+      "lookback_minutes": 1440,
+      "verify_serial": true
+    }
+  },
   "profile": {
     "_note": "Optional. Answers GroHR profile requests (name + photo). Defaults are eSSL Easy Time Pro / BioTime.",
     "source": "*",

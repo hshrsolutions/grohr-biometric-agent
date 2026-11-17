@@ -85,6 +85,10 @@ class Agent:
 					)
 					continue
 				device = {**device, "source": source}
+			if device.get("driver") == "ZKTeco":
+				from grohr_agent.devices.zkteco import settings_for
+
+				device = {**device, "zk": settings_for(self.config, device)}
 			try:
 				# The cursor is the server's, not ours. A stale one is harmless.
 				since = _parse(device.get("last_punch_time"))

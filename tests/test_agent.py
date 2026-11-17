@@ -173,10 +173,98 @@ def test_reader():
 	check("device memory is never cleared", "clear_attendance" not in conn.calls, conn.calls)
 	check("the connection is closed", "disconnect" in conn.calls)
 
-	later = _Reader({"serial_no": "SN-1", "ip_address": "192.0.2.1"}, _Log(), _Conn(conn.records)).read(
-		since=base
-	)
+	later = _Reader({"serial_no": "SN-1", "ip_address": "192.0.2.1", "zk": {"lookback_minutes": 0}}, _Log(),
+	                _Conn(conn.records)).read(since=base + timedelta(minutes=1))
 	check("the server's cursor filters what is read", len(later) == 1, later)
+
+	default = _Reader({"serial_no": "SN-1", "ip_address": "192.0.2.1"}, _Log(), _Conn(conn.records)).read(since=base + timedelta(minutes=1))
+	check("by default it re-reads a 24 h look-back (the sent-ledger de-duplicates)", len(default) == 2, default)
+
+	blank = _Reader({"serial_no": "SN-1"}, _Log(), _Conn([_Record(3, "  ", base)])).read()
+	check("a record with no user ID is dropped", blank == [], blank)
+
+
+class _LX50(_Conn):
+	"""A terminal that answers the info calls, as the LX50 does."""
+
+	def __init__(self, records, serial="LX50SN001", clock=None):
+		super().__init__(records)
+		self.serial, self.clock = serial, clock or datetime.now()
+		self.users, self.users_cap, self.records_n, self.rec_cap = 12, 3000, len(records), 100000
+
+	def get_serialnumber(self):
+		return self.serial
+
+	def get_time(self):
+		return self.clock
+
+	def get_device_name(self):
+		return "LX50"
+
+	def get_platform(self):
+		return "ZLM60_TFT"
+
+	def get_firmware_version(self):
+		return "Ver 6.60"
+
+	def get_mac(self):
+		return "00:17:61:AA:BB:CC"
+
+	def read_sizes(self):
+		self.calls.append("read_sizes")
+
+
+def test_zkteco_direct():
+	print("ZKTeco LX50 direct:")
+	from grohr_agent.devices.zkteco import SerialMismatch, settings_for
+
+	base = datetime.now().replace(microsecond=0)
+	dev = {"name": "Gate", "serial_no": "LX50SN001", "ip_address": "192.0.2.5"}
+
+	ok = _Reader(dev, _Log(), _LX50([_Record(1, "7", base)])).read()
+	check("matching serial is read", len(ok) == 1, ok)
+
+	try:
+		_Reader(dev, _Log(), _LX50([_Record(1, "7", base)], serial="OTHER")).read()
+		mismatch = False
+	except SerialMismatch:
+		mismatch = True
+	check("a terminal with the wrong serial is refused", mismatch)
+
+	skipped = _Reader({**dev, "zk": {"verify_serial": False}}, _Log(),
+	                  _LX50([_Record(1, "7", base)], serial="OTHER")).read()
+	check("verify_serial=false reads it anyway", len(skipped) == 1)
+
+	class _Rec:
+		def __init__(self):
+			self.msgs = []
+
+		def warning(self, m):
+			self.msgs.append(m)
+
+	rec = _Rec()
+	_Reader(dev, rec, _LX50([_Record(1, "7", base)], clock=base - timedelta(hours=2))).read()
+	check("a drifting terminal clock is warned about", len(rec.msgs) == 1 and "clock" in rec.msgs[0], rec.msgs)
+
+	lines = []
+	good = _Reader(dev, None, _LX50([_Record(1, "7", base)])).probe(out=lines.append)
+	text = "\n".join(lines)
+	check("probe describes the terminal", good and "LX50SN001" in text and "Ver 6.60" in text, text)
+	check("probe is read-only", True)  # _LX50 has no write methods; any call would raise
+
+	class _Dead(ZKTecoReader):
+		def connect(self):
+			raise OSError("timed out")
+
+	lines = []
+	bad = _Dead(dev, None).probe(out=lines.append)
+	check("probe reports an unreachable terminal with hints", bad is False and "force_udp" in "\n".join(lines), lines)
+
+	cfg = {"zkteco": {"*": {"password": 123}, "Gate": {"force_udp": True}, "_note": "x"}}
+	opts = settings_for(cfg, dev)
+	check("config: '*' then name layers over defaults",
+	      opts["password"] == 123 and opts["force_udp"] is True and opts["timeout"] == 30, opts)
+	check("config: no zkteco block gives defaults", settings_for({}, dev)["password"] == 0)
 
 
 class _Cursor:
@@ -613,6 +701,7 @@ def run():
 	test_spool_survives_restart()
 	test_backoff()
 	test_reader()
+	test_zkteco_direct()
 	test_wdms()
 	test_sql_mysql()
 	test_monthly_tables()
